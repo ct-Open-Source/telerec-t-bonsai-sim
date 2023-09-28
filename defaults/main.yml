@@ -1,0 +1,5 @@
+bonsai:
+  db:
+    name: bonsai
+    user: bonsai
+    host: bonsai_postgres

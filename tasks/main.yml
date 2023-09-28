@@ -1,0 +1,224 @@
+- name: Create bonsai directory if needed
+  file:
+    path: '{{ docker_dir }}/bonsai'
+    state: directory
+    owner: '{{ user.name }}'
+    group: 'docker'
+    mode: 0775
+  when: service_bonsai != 'absent'
+
+- name: Create repository subdirectory if needed
+  file:
+    path: '{{ docker_dir }}/bonsai/repository'
+    state: directory
+    owner: '{{ user.name }}'
+    group: 'docker'
+    mode: 0775
+  when: service_bonsai != 'absent'
+
+- name: Get bonsai git repository
+  ansible.builtin.git:
+    repo: 'https://github.com/KlausMerkert/Bonsai.git'
+    dest: '{{ docker_dir }}/bonsai/repository'
+  when: service_bonsai != 'absent'
+
+- name: Create counter subdirectory if needed
+  file:
+    path: '{{ docker_dir }}/bonsai/counter'
+    state: directory
+    owner: '{{ user.name }}'
+    group: 'docker'
+    mode: 0775
+  when: service_bonsai != 'absent'
+
+- name: Create php_w_pg subdirectory if needed
+  file:
+    path: '{{ docker_dir }}/bonsai/php_w_pg'
+    state: directory
+    owner: '{{ user.name }}'
+    group: 'docker'
+    mode: 0775
+  when: service_bonsai != 'absent'
+
+- name: Copy bonsai php container Dockerfile
+  become: 'no'
+  synchronize:
+    src: php_w_pg_Dockerfile
+    dest: '{{ docker_dir }}/bonsai/php_w_pg/Dockerfile'
+    mode: push
+  when: service_bonsai != 'absent'
+
+- name: Create postgres subdirectory if needed
+  file:
+    path: '{{ docker_dir }}/bonsai/postgres'
+    state: directory
+    owner: '{{ user.name }}'
+    group: 'docker'
+    mode: 0775
+  when: service_bonsai != 'absent'
+
+- name: Create postgres/init subdirectory if needed
+  file:
+    path: '{{ docker_dir }}/bonsai/postgres/init'
+    state: directory
+    owner: '{{ user.name }}'
+    group: 'docker'
+    mode: 0775
+  when: service_bonsai != 'absent'
+
+- name: Copy bonsai counter SQL database dump
+  become: 'no'
+  synchronize:
+    src: bonsai_dump.sql
+    dest: '{{ docker_dir }}/bonsai/postgres/init/init_database_dump.sql'
+    mode: push
+  when: service_bonsai != 'absent'
+
+- name: "Copy counter.php for the bonsai counter"
+  template:
+    src: counter.php.j2
+    dest: '{{ docker_dir }}/bonsai/counter/counter.php'
+    owner: '{{ user.name }}'
+    group: 'docker'
+  when: service_bonsai != 'absent'
+
+- name: Copy error message for the counter subdomain
+  become: 'no'
+  synchronize:
+    src: counter-error.html
+    dest: '{{ docker_dir }}/bonsai/counter/index.html'
+    mode: push
+  when: service_bonsai != 'absent'
+
+- name: Copy bonsai nginx.conf
+  become: 'no'
+  synchronize:
+    src: nginx.conf
+    dest: '{{ docker_dir }}/bonsai/nginx.conf'
+    mode: push
+  when: service_bonsai != "absent"
+
+- name: Copy bonsai counter nginx.conf
+  become: 'no'
+  synchronize:
+    src: counter_nginx.conf
+    dest: '{{ docker_dir }}/bonsai/counter_nginx.conf'
+    mode: push
+  when: service_bonsai != 'absent'
+
+- name: "Ensure bonsai counter is {{ service_bonsai }}"
+  docker_compose:
+    state: present
+    recreate: always
+    stopped: "{{ service_bonsai == 'stopped' }}"
+    project_name: bonsai_counter
+    definition:
+      version: '3.7'
+      services:
+        bonsai_postgres:
+          image: postgres:alpine
+          container_name: bonsai_postgres
+          restart: always
+          environment:
+            - POSTGRES_PASSWORD={{ bonsai.db.password }}
+            - POSTGRES_USER={{ bonsai.db.user }}
+            - POSTGRES_DB={{ bonsai.db.name }}
+          volumes:
+            - "{{ docker_dir }}/bonsai/postgres/data:/var/lib/postgresql/data:rw"
+            - "{{ docker_dir }}/bonsai/postgres/init/init_database_dump.sql:/docker-entrypoint-initdb.d/init.sql:rw"
+          networks:
+            - bonsai_net
+        bonsai_counter_php:
+          build: "{{ docker_dir }}/bonsai/php_w_pg"
+          container_name: bonsai_counter_php
+          restart: always
+          environment:
+            - PG_HOST={{ bonsai.db.host }}
+            - POSTGRES_PASSWORD={{ bonsai.db.password }}
+            - POSTGRES_USER={{ bonsai.db.user }}
+            - POSTGRES_DB={{ bonsai.db.name }}
+          volumes:
+            - "{{ docker_dir }}/bonsai/counter:/var/www/html:rw"
+          depends_on:
+            - bonsai_postgres
+          networks:
+            - bonsai_net
+        bonsai_counter_nginx:
+          image: nginx:alpine
+          container_name: bonsai_counter_nginx
+          restart: always
+          volumes:
+            - "{{ docker_dir }}/bonsai/counter_nginx.conf:/etc/nginx/conf.d/default.conf:ro"
+            - "{{ docker_dir }}/bonsai/counter:/var/www/html:ro"
+            - "{{ docker_dir }}/bonsai/repository:/var/www/repository:ro"
+          labels:
+            - "traefik.enable=true"
+            - "traefik.docker.network=traefik_default"
+            - "traefik.http.routers.bonsai_counter.EntryPoints=web-secure"
+            - traefik.http.routers.bonsai_counter.rule=Host(`bonsai.counter.merkert.info`)
+            - "traefik.http.routers.bonsai_counter.tls=true"
+            - "traefik.http.routers.bonsai_counter.tls.certresolver=default"
+          depends_on:
+            - bonsai_postgres
+            - bonsai_counter_php
+          networks:
+            - bonsai_net
+            - traefik_net
+        bonsai_adminer:
+          image: adminer:latest
+          container_name: bonsai_adminer
+          restart: always
+          environment:
+            - ADMINER_DEFAULT_SERVER=bonsai_postgres
+          labels:
+            - "traefik.enable=true"
+            - "traefik.docker.network=traefik_default"
+            - "traefik.http.routers.bonsai_adminer.EntryPoints=web-secure"
+            - traefik.http.routers.bonsai_adminer.rule=Host(`adminer.bonsai.merkert.info`)
+            - "traefik.http.routers.bonsai_adminer.tls=true"
+            - "traefik.http.routers.bonsai_adminer.tls.certresolver=default"
+          depends_on:
+            - bonsai_postgres
+          networks:
+            - bonsai_net
+            - traefik_net
+      networks:
+        bonsai_net:
+          driver: bridge
+        traefik_net:
+          external:
+            name: traefik_default
+  register: bonsai_stack
+  when: service_bonsai != 'absent'
+
+- name: "Ensure bonsai is {{ service_bonsai }}"
+  docker_compose:
+    state: present
+    recreate: always
+    stopped: "{{ service_bonsai == 'stopped' }}"
+    project_name: bonsai
+    definition:
+      version: '3.7'
+      services:
+        bonsai_nginx:
+          image: nginx:alpine
+          container_name: bonsai_nginx
+          restart: always
+          volumes:
+            - "{{ docker_dir }}/bonsai/nginx.conf:/etc/nginx/conf.d/default.conf:ro"
+            - "{{ docker_dir }}/bonsai/repository:/var/www/html:ro"
+          labels:
+            - "traefik.enable=true"
+            - "traefik.docker.network=traefik_default"
+            - "traefik.http.routers.bonsai.EntryPoints=web-secure"
+            - traefik.http.routers.bonsai.rule=(Host(`bonsai.pinyto.de`) || Host(`bonsai.merkert.info`))
+            - "traefik.http.routers.bonsai.tls=true"
+            - "traefik.http.routers.bonsai.tls.certresolver=default"
+          networks:
+            - traefik_net
+      networks:
+        traefik_net:
+          external:
+            name: traefik_default
+  register: bonsai_stack
+  when: service_bonsai != 'absent'

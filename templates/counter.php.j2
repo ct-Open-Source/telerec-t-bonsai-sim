@@ -1,0 +1,38 @@
+<?php
+header("Access-Control-Allow-Headers: Content-Type");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Origin: *");
+header('Content-Type: application/json');
+
+if (!isset($_POST["path"])) {
+  echo '{"error": "Please supply a path."}';
+  exit;
+}
+$path = $_POST["path"];
+if (!isset($_POST["partial"])) {
+  echo '{"error": "Please supply a partial."}';
+  exit;
+}
+$partial = $_POST["partial"];
+$connection = pg_Connect("host={{ bonsai.db.host }} dbname={{ bonsai.db.name }} user={{ bonsai.db.user }} password={{ bonsai.db.password }}");
+if (!$connection) {
+  echo '{"error": "Could not connect to database."}';
+  exit;
+}
+$query = pg_query($connection, "select views from counter where page='" . $path . "'");
+if (!$query) {
+  echo '{"error": "The query failed."}';
+  exit;
+}
+$result = pg_fetch_row($query, 0);
+if (!$result) {
+  pg_query($connection, "insert into counter(page, date, views, partial) values('" . $path . "', now(), 1, '" . $partial . "')");
+  $result = array(1);
+} else {
+  pg_query($connection, "update counter set (views, date)=(views+1,now()) where page='" . $path . "'");
+}
+$timestamp = filemtime("../repository/partials/" . $partial);
+if (!$timestamp) {
+  $timestamp = "false";
+}
+echo '{"count": ' . $result[0] . ', "last_change": ' . $timestamp . '}';
